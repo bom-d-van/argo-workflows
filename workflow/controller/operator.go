@@ -1438,6 +1438,42 @@ func (woc *wfOperationCtx) assessNodeStatus(ctx context.Context, pod *apiv1.Pod,
 		new.PodIP = pod.Status.PodIP
 	}
 
+	if x, ok := pod.Annotations[common.AnnotationKeyReportOutputsCompleted]; ok {
+		woc.log.Warn("workflow uses legacy/insecure pod patch, see https://argo-workflows.readthedocs.io/en/release-3.5/workflow-rbac/")
+		resultName := woc.nodeID(pod)
+		if x == "true" {
+			woc.wf.Status.MarkTaskResultComplete(resultName)
+		} else {
+			woc.wf.Status.MarkTaskResultIncomplete(resultName)
+		}
+	}
+
+	if x, ok := pod.Annotations[common.AnnotationKeyOutputs]; ok {
+		woc.log.Warn("workflow uses legacy/insecure pod patch, see https://argo-workflows.readthedocs.io/en/release-3.5/workflow-rbac/")
+		if new.Outputs == nil {
+			new.Outputs = &wfv1.Outputs{}
+		}
+		if err := json.Unmarshal([]byte(x), new.Outputs); err != nil {
+			new.Phase = wfv1.NodeError
+			new.Message = err.Error()
+		}
+	} else if resultName := woc.nodeID(pod); new.Phase == wfv1.NodeSucceeded &&
+		tmpl.HasOutputs() && !woc.wf.Status.IsTaskResultInited(resultName) {
+		// scenario: pod has completed, task result are properly created and
+		// finalized (judging from wait container's exit status), however, the
+		// task result infomer in the leader controller has not received
+		// updates, we shall keep waiting.
+		//
+		// for whatever reasons if task result is never received by the
+		// informer (like task result is manually deleted), a manual intervention
+		// is needed (delete, stop, retry, etc.)
+		//
+		// this doesn't handle the case when a pod failed, the wait container
+		// might not be able to insert a task result or annotate the pod. plus,
+		// a retry is probably needed when there are failures.
+		woc.wf.Status.MarkTaskResultIncomplete(resultName)
+	}
+
 	new.HostNodeName = pod.Spec.NodeName
 
 	if !new.Progress.IsValid() {
